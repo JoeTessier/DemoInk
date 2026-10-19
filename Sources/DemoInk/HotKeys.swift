@@ -38,9 +38,12 @@ final class HotKeyManager {
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
         if status != noErr { NSLog("DemoInk: InstallEventHandler failed (%d)", status) }
         // Each manager gets its own id range so two managers' handlers never see each other's ids.
-        nextID = HotKeyManager.nextSignatureSalt &* 10_000 &+ 1
+        firstID = HotKeyManager.nextSignatureSalt &* 10_000 &+ 1
+        nextID = firstID
         HotKeyManager.nextSignatureSalt += 1
     }
+
+    private var firstID: UInt32 = 1
 
     /// Registers `keyCode`+`modifiers`. Duplicate combos within this manager are ignored (returns noErr).
     @discardableResult
@@ -69,6 +72,7 @@ final class HotKeyManager {
         refs.removeAll()
         handlers.removeAll()
         combos.removeAll()
+        nextID = firstID // ids are free again: the range never drifts into another manager's
     }
 
     /// Virtual key code that types `char` in the current keyboard layout (so ⌃⌥A is the key labelled A

@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotKeys = HotKeyManager()
     private var hotKeyResults: [HotKeyManager.Registration] = []
     private let mods = UInt32(controlKey | optionKey)
+    /// "Suspendre les raccourcis": every global hotkey released (and drawing mode left) until re-enabled.
+    private var hotKeysPaused = false
+    var globalHotKeyCount: Int { hotKeys.count }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         overlay = OverlayController()
@@ -28,8 +31,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSLog("DemoInk: launched — toggle drawing mode with ⌃§ (keyCode %d + control), fallback ⌃⌥A", kVK_ISO_Section)
     }
 
+    /// Quit (menu, ⌘Q from the menu, logout): release the drawing-mode keys and the cursor before the process goes.
+    func applicationWillTerminate(_ notification: Notification) {
+        overlay?.terminate()
+        hotKeys.unregisterAll()
+    }
+
     private func registerHotKeys() {
         hotKeys.unregisterAll()
+        hotKeyResults = []
+        guard !hotKeysPaused else { return }
         let a = HotKeyManager.keyCode(for: "a", fallback: UInt32(kVK_ANSI_A))
         let c = HotKeyManager.keyCode(for: "c", fallback: UInt32(kVK_ANSI_C))
         var results: [HotKeyManager.Registration] = []
@@ -117,10 +128,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(coe)
         menu.addItem(.separator())
 
+        let pause = item("Suspendre les raccourcis globaux", #selector(togglePause))
+        pause.state = hotKeysPaused ? .on : .off
+        menu.addItem(pause)
         let failed = hotKeyResults.filter { !$0.ok }
-        let status = NSMenuItem(title: failed.isEmpty ? "Raccourcis globaux : OK"
-                                : "⚠︎ Raccourci(s) indisponible(s) : " + failed.map { "\($0.name) (\($0.status))" }.joined(separator: ", "),
-                                action: nil, keyEquivalent: "")
+        var text = hotKeysPaused ? "Raccourcis globaux : suspendus" : failed.isEmpty ? "Raccourcis globaux : OK"
+            : "⚠︎ Raccourci(s) indisponible(s) : " + failed.map { "\($0.name) (\($0.status))" }.joined(separator: ", ")
+        if !overlay.modeKeyFailures.isEmpty {
+            text += " · ⚠︎ touches dessin indisponibles : " + overlay.modeKeyFailures.joined(separator: ", ")
+        }
+        let status = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
         menu.addItem(.separator())
@@ -152,5 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func chooseColor(_ sender: NSMenuItem) { overlay.selectColor(sender.tag) }
     @objc private func clearAll() { overlay.clearAll() }
     @objc private func toggleClearOnExit() { Settings.shared.clearOnExit.toggle() }
+    @objc private func togglePause() {
+        hotKeysPaused.toggle()
+        if hotKeysPaused { overlay.setDrawing(false) }
+        registerHotKeys()
+        NSLog("DemoInk: global hotkeys %@ (%d registered)", hotKeysPaused ? "paused" : "resumed", hotKeys.count)
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 }

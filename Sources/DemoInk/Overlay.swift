@@ -5,17 +5,35 @@ final class OverlayPanel: NSPanel {
     let canvas: CanvasView
     let targetScreen: NSScreen
 
+    /// Height of the menu-bar strip to leave uncovered at the top of `screen`. With an auto-hidden menu bar the
+    /// strip is 0 on the primary screen: the status-bar thickness is reserved there so the bar can still slide in.
+    static func menuBarStrip(for screen: NSScreen) -> CGFloat {
+        let strip = screen.frame.maxY - screen.visibleFrame.maxY
+        if strip > 0 { return strip }
+        return screen == NSScreen.screens.first ? NSStatusBar.system.thickness : 0
+    }
+
+    /// The screen minus its menu-bar strip: at `.screenSaver` level the panel would otherwise sit ABOVE the menu
+    /// bar (level 24), hide it and swallow clicks on the status item while drawing.
+    static func frame(for screen: NSScreen) -> NSRect {
+        var f = screen.frame
+        f.size.height -= menuBarStrip(for: screen)
+        return f
+    }
+
     init(screen: NSScreen) {
         targetScreen = screen
-        canvas = CanvasView(frame: NSRect(origin: .zero, size: screen.frame.size), scale: screen.backingScaleFactor)
-        super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+        let frame = OverlayPanel.frame(for: screen)
+        canvas = CanvasView(frame: NSRect(origin: .zero, size: frame.size), scale: screen.backingScaleFactor)
+        super.init(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
-        setFrame(screen.frame, display: false)
+        setFrame(frame, display: false)
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
         level = .screenSaver
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        sharingType = .readOnly // visible to full-screen capture (Zoom/Teams/Meet "share screen")
         isFloatingPanel = true
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = false
@@ -47,7 +65,7 @@ enum KeyAction: Equatable {
 
 final class OverlayController {
     private(set) var isDrawing = false
-    private var panels: [OverlayPanel] = []
+    private(set) var panels: [OverlayPanel] = []
     enum Board { case white, black }
     private var board: Board?
     var onStateChange: (() -> Void)?
@@ -59,27 +77,49 @@ final class OverlayController {
     private let modeKeys = HotKeyManager()
     private var lastAction: (KeyAction, TimeInterval)?
     var modeHotKeyCount: Int { modeKeys.count }
+    /// Drawing-mode keys whose registration failed (owned by another app); shown in the status menu.
+    private(set) var modeKeyFailures: [String] = []
+    private var screenSignature = ""
+    var panelCount: Int { panels.count }
 
     init() {
         rebuildPanels()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
-            self?.rebuildPanels()
+            self?.screensChanged()
         }
+        if let selftest = ProcessInfo.processInfo.environment["DEMOINK_SELFTEST"] { scheduleSelfTest(selftest) }
+    }
+
+    private static func currentScreenSignature() -> String {
+        NSScreen.screens.map { "\($0.frame)@\($0.backingScaleFactor)" }.joined(separator: "|")
+    }
+
+    /// Display configuration notification. The same notification also fires on sleep/wake, Dock/menu-bar
+    /// changes… with an unchanged screen set: then the panels (and the annotations on them) are kept.
+    func screensChanged(force: Bool = false) {
+        guard force || OverlayController.currentScreenSignature() != screenSignature else {
+            panels.forEach { $0.orderFrontRegardless() }
+            return
+        }
+        rebuildPanels()
     }
 
     private func rebuildPanels() {
-        panels.forEach { $0.orderOut(nil) }
+        panels.forEach { $0.canvas.cancelCurrent(); $0.orderOut(nil); $0.close() }
         panels = NSScreen.screens.map { screen in
             let p = OverlayPanel(screen: screen)
             p.canvas.controller = self
             p.orderFrontRegardless()
             return p
         }
+        screenSignature = OverlayController.currentScreenSignature()
         board = nil
         NSLog("DemoInk: %d overlay panel(s) built", panels.count)
-        applyMode()
-        let selftest = ProcessInfo.processInfo.environment["DEMOINK_SELFTEST"]
+        applyMode() // drawing state, cursor and mode hotkeys are untouched: they do not depend on the panels
+    }
+
+    private func scheduleSelfTest(_ selftest: String) {
         if selftest == "1", let p = panelUnderMouse() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runSelfTest(on: p.canvas) }
         } else if selftest == "menubar" {
@@ -105,7 +145,7 @@ final class OverlayController {
         }
     }
 
-    private func panelUnderMouse() -> OverlayPanel? {
+    func panelUnderMouse() -> OverlayPanel? {
         let m = NSEvent.mouseLocation
         return panels.first { NSMouseInRect(m, $0.targetScreen.frame, false) } ?? panels.first
     }
@@ -122,6 +162,7 @@ final class OverlayController {
             registerModeKeys()
         } else {
             modeKeys.unregisterAll()
+            modeKeyFailures = []
             panels.forEach { $0.canvas.cancelCurrent() } // Esc mid-drag: drop the in-progress stroke
             setBoard(nil)
             if forceClear ?? Settings.shared.clearOnExit { panels.forEach { $0.canvas.clear() } }
@@ -267,12 +308,12 @@ final class OverlayController {
     private func registerModeKeys() {
         modeKeys.unregisterAll()
         let shift = UInt32(shiftKey)
-        var failed = 0
+        var failed: [String] = []
         func reg(_ name: String, _ code: UInt32, _ mods: UInt32, _ action: KeyAction) {
             let r = modeKeys.register(name: name, keyCode: code, modifiers: mods, quiet: true) { [weak self] in
                 self?.perform(action, source: "hotkey")
             }
-            if !r.ok { failed += 1 }
+            if !r.ok { failed.append(name) }
         }
         /// Letter in the current layout, with and without ⇧ (so Caps/Shift do not break it).
         func letter(_ ch: Character, _ fallback: Int, _ action: KeyAction) {
@@ -281,7 +322,16 @@ final class OverlayController {
             reg("⇧" + String(ch), code, shift, action)
         }
 
-        reg("Esc", UInt32(kVK_Escape), 0, .exit)
+        // Esc must always exit, whatever modifier happens to be held (⇧/⌘/⌥/⌃ in any mix). Carbon matches
+        // modifiers exactly, so every combination is registered — except those containing ⌘⌥ (Force Quit).
+        let modBits: [(UInt32, String)] = [(UInt32(controlKey), "⌃"), (UInt32(optionKey), "⌥"),
+                                           (UInt32(shiftKey), "⇧"), (UInt32(cmdKey), "⌘")]
+        for mask in 0..<16 {
+            var mods: UInt32 = 0, name = ""
+            for (i, (bit, sym)) in modBits.enumerated() where mask & (1 << i) != 0 { mods |= bit; name += sym }
+            if mods & UInt32(cmdKey | optionKey) == UInt32(cmdKey | optionKey) { continue }
+            reg(name + "Esc", UInt32(kVK_Escape), mods, .exit)
+        }
         for t in Tool.allCases {
             let fb: Int
             switch t { case .arrow: fb = kVK_ANSI_A; case .rectangle: fb = kVK_ANSI_R; case .highlighter: fb = kVK_ANSI_H
@@ -313,6 +363,13 @@ final class OverlayController {
         reg("pavé -", UInt32(kVK_ANSI_KeypadMinus), 0, .widthDown)
         reg("pavé +", UInt32(kVK_ANSI_KeypadPlus), 0, .widthUp)
 
-        NSLog("DemoInk: %d drawing-mode hotkeys registered, %d failed", modeKeys.count, failed)
+        modeKeyFailures = failed
+        NSLog("DemoInk: %d drawing-mode hotkeys registered, %d failed", modeKeys.count, failed.count)
+    }
+
+    /// App termination: leave drawing mode so the modifier-less hotkeys are released and the cursor restored.
+    func terminate() {
+        setDrawing(false)
+        modeKeys.unregisterAll()
     }
 }

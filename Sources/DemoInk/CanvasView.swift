@@ -272,7 +272,8 @@ final class CanvasView: NSView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             label.path = Geometry.markerNumberPath(markerNumber, center: bubble.center, diameter: d)
-            CATransaction.commit()        case .highlighter:
+            CATransaction.commit()
+        case .highlighter:
             if shift {
                 let p = CGMutablePath()
                 p.move(to: start)
@@ -296,13 +297,8 @@ final class CanvasView: NSView {
         CATransaction.commit()
     }
 
-    /// Where a Count bubble may sit: the canvas minus the menu-bar strip (the menu bar draws above the overlay).
-    private var markerArea: CGRect {
-        guard let screen = (window as? OverlayPanel)?.targetScreen else { return bounds }
-        var r = bounds
-        r.size.height -= max(0, screen.frame.maxY - screen.visibleFrame.maxY)
-        return r
-    }
+    /// Where a Count bubble may sit: the whole canvas (the panel already stops below the menu-bar strip).
+    private var markerArea: CGRect { bounds }
 
     func refreshCurrent() {
         applyStyle()
