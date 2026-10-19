@@ -82,11 +82,34 @@ final class OverlayController {
     private var screenSignature = ""
     var panelCount: Int { panels.count }
 
+    /// Text tool: the canvas whose label is being typed. While set, the drawing-mode hotkeys are unregistered
+    /// (so letters, digits, Esc, -/+ reach the editor) and the app is active (see beginTextEntry).
+    private(set) weak var textCanvas: CanvasView?
+    /// App that was frontmost when the entry activated DemoInk; re-activated exactly when the entry ends.
+    private var focusToRestore: NSRunningApplication?
+    private var activatedForText = false
+    var isEditingText: Bool { textCanvas?.isEditingText == true }
+
     init() {
         rebuildPanels()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             self?.screensChanged()
+        }
+        // Activation is asynchronous: once active, give the editor's panel key status.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let c = self?.textCanvas, let w = c.window else { return }
+            w.makeKeyAndOrderFront(nil)
+            w.makeFirstResponder(c)
+        }
+        // The user switched app mid-entry (⌘Tab, Mission Control…): commit, and respect their choice of app.
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, self.textCanvas != nil, self.activatedForText else { return }
+            self.activatedForText = false
+            self.focusToRestore = nil
+            self.endTextEntry(commit: true)
         }
         if let selftest = ProcessInfo.processInfo.environment["DEMOINK_SELFTEST"] { scheduleSelfTest(selftest) }
     }
@@ -102,6 +125,7 @@ final class OverlayController {
             panels.forEach { $0.orderFrontRegardless() }
             return
         }
+        endTextEntry(commit: true) // label being typed: commit, restore keys and focus, then rebuild
         rebuildPanels()
     }
 
@@ -140,6 +164,8 @@ final class OverlayController {
             }
         } else if selftest == "arrows", let p = panelUnderMouse() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runArrowGallery(on: p.canvas) }
+        } else if selftest == "text", let p = panelUnderMouse() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runTextGallery(on: p.canvas) }
         } else if selftest == "shapes", let p = panelUnderMouse() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runShapesGallery(on: p.canvas) }
         }
@@ -157,6 +183,8 @@ final class OverlayController {
     /// `clearAll`: nil → follow the "clear on exit" setting (⌃⌥A / menu); true → always clear (Esc).
     func setDrawing(_ on: Bool, clearAll forceClear: Bool? = nil) {
         guard on != isDrawing else { return }
+        // ⌃§ / menu / pause while typing: commit the label first (keys stay released: drawing mode is ending).
+        if !on { endTextEntry(commit: true, restoreKeys: false) }
         isDrawing = on
         if on {
             registerModeKeys()
@@ -197,6 +225,7 @@ final class OverlayController {
     // MARK: Actions
 
     func clearAll() {
+        endTextEntry(commit: false)
         board = nil
         panels.forEach { $0.canvas.clear() }
     }
@@ -208,6 +237,7 @@ final class OverlayController {
     func nextMarkerNumber() -> Int { (panels.map { $0.canvas.maxMarkerNumber }.max() ?? 0) + 1 }
 
     func selectTool(_ t: Tool) {
+        endTextEntry(commit: true) // tool picked from the menu while typing
         Settings.shared.tool = t
         onStateChange?() // menu-bar label is the feedback (no HUD)
     }
@@ -222,10 +252,11 @@ final class OverlayController {
     func changeWidth(by delta: CGFloat) {
         let s = Settings.shared
         let w = min(max(s.width + delta, Settings.minWidth), Settings.maxWidth)
-        guard w != s.width else { showHUD("Épaisseur \(Int(w)) pt"); return }
+        let hud = textCanvas != nil ? "Texte \(Int(Geometry.textFontSize(width: w).rounded())) pt" : "Épaisseur \(Int(w)) pt"
+        guard w != s.width else { showHUD(hud); return }
         s.width = w
         panels.forEach { $0.canvas.refreshCurrent() }
-        showHUD("Épaisseur \(Int(w)) pt")
+        showHUD(hud)
     }
 
     func setBoard(_ b: Board?) {
@@ -300,7 +331,7 @@ final class OverlayController {
 
     /// Keyboard layout changed (AZERTY ⇄ QWERTY…): letters are registered by layout, so rebuild them.
     func keyboardLayoutChanged() {
-        guard isDrawing else { return }
+        guard isDrawing, textCanvas == nil else { return } // mid-entry: re-registered with the new layout at the end
         modeKeys.unregisterAll()
         registerModeKeys()
     }
@@ -336,7 +367,7 @@ final class OverlayController {
             let fb: Int
             switch t { case .arrow: fb = kVK_ANSI_A; case .rectangle: fb = kVK_ANSI_R; case .highlighter: fb = kVK_ANSI_H
                        case .spotlight: fb = kVK_ANSI_S; case .pen: fb = kVK_ANSI_P
-                       case .oval: fb = kVK_ANSI_O; case .counter: fb = kVK_ANSI_N }
+                       case .oval: fb = kVK_ANSI_O; case .counter: fb = kVK_ANSI_N; case .text: fb = kVK_ANSI_T }
             letter(Character(t.key), fb, .tool(t))
         }
         letter("z", kVK_ANSI_Z, .undo)
@@ -369,7 +400,64 @@ final class OverlayController {
 
     /// App termination: leave drawing mode so the modifier-less hotkeys are released and the cursor restored.
     func terminate() {
+        endTextEntry(commit: true, restoreKeys: false)
         setDrawing(false)
         modeKeys.unregisterAll()
+    }
+
+    // MARK: Text entry
+
+    /// Starts a label at `p` on `canvas`. The drawing-mode hotkeys are released for the whole entry, and the app is
+    /// activated: a non-activating panel of a never-active app does not receive keyDown, so without activation the
+    /// typed keys would go to the presented app. The previously frontmost app is re-activated when the entry ends.
+    func beginTextEntry(on canvas: CanvasView, at p: CGPoint) {
+        guard isDrawing else { return }
+        endTextEntry(commit: true, restoreKeys: false, restoreFocus: false) // defensive: one entry at a time
+        modeKeys.unregisterAll()
+        textCanvas = canvas
+        canvas.startText(at: p)
+        // Decided on the window server's frontmost app, not NSApp.isActive (which can read true at launch while
+        // another app actually has the keyboard).
+        let front = NSWorkspace.shared.frontmostApplication
+        if front != NSRunningApplication.current && !activatedForText {
+            focusToRestore = front
+            activatedForText = true
+            // Cooperative NSApp.activate() is refused for a background accessory app; the legacy call is honoured.
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        if let w = canvas.window {
+            w.makeKeyAndOrderFront(nil)
+            w.makeFirstResponder(canvas)
+        }
+        NSLog("DemoInk: text entry started (mode hotkeys: %d, will restore focus to %@)", modeKeys.count,
+              focusToRestore?.bundleIdentifier ?? "-")
+    }
+
+    /// Ends the label being typed (commit keeps non-blank text, cancel drops it), then re-registers the drawing-mode
+    /// hotkeys if drawing mode is still on and hands keyboard focus back to the app that had it. No-op without entry.
+    func endTextEntry(commit: Bool, restoreKeys: Bool = true, restoreFocus: Bool = true) {
+        guard let canvas = textCanvas else { return }
+        textCanvas = nil
+        canvas.finishText(commit: commit)
+        if restoreKeys && isDrawing { registerModeKeys() }
+        if restoreFocus { restoreFocusAfterText() }
+        NSLog("DemoInk: text entry ended (%@), mode hotkeys: %d", commit ? "commit" : "cancel", modeKeys.count)
+    }
+
+    private func restoreFocusAfterText() {
+        guard activatedForText else { return }
+        activatedForText = false
+        let prev = focusToRestore
+        focusToRestore = nil
+        if let prev = prev, !prev.isTerminated {
+            if #available(macOS 14.0, *) {
+                NSApp.yieldActivation(to: prev)
+                prev.activate()
+            } else {
+                prev.activate(options: [])
+            }
+        } else {
+            NSApp.deactivate()
+        }
     }
 }

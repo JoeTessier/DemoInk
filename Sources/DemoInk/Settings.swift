@@ -1,7 +1,7 @@
 import AppKit
 
 enum Tool: String, CaseIterable {
-    case arrow, rectangle, oval, highlighter, spotlight, pen, counter
+    case arrow, rectangle, oval, highlighter, spotlight, pen, counter, text
 
     var key: String {
         switch self {
@@ -12,6 +12,7 @@ enum Tool: String, CaseIterable {
         case .pen: return "p"
         case .oval: return "o"
         case .counter: return "n"
+        case .text: return "t"
         }
     }
 
@@ -24,6 +25,7 @@ enum Tool: String, CaseIterable {
         case .pen: return "Stylo"
         case .oval: return "Ovale"
         case .counter: return "Compteur"
+        case .text: return "Texte"
         }
     }
 
@@ -37,6 +39,7 @@ enum Tool: String, CaseIterable {
         case .pen: return "Pen"
         case .oval: return "Oval"
         case .counter: return "Count"
+        case .text: return "Text"
         }
     }
 
@@ -49,6 +52,7 @@ enum Tool: String, CaseIterable {
         case .pen: return "pencil.tip"
         case .oval: return "oval"
         case .counter: return "1.circle.fill"
+        case .text: return "textformat"
         }
     }
 }

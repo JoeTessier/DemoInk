@@ -5,15 +5,17 @@ import QuartzCore
 /// live preview only replaces the current layer's path.
 final class CanvasView: NSView {
     weak var controller: OverlayController?
-    private let scale: CGFloat
+    let scale: CGFloat
 
     private let boardLayer = CALayer()
     private let spotlightContainer = CALayer()
-    private let shapesContainer = CALayer()
+    let shapesContainer = CALayer()
     private let hud = HUDLayer()
 
-    private enum Entry { case shape(CAShapeLayer), spotlight(CAShapeLayer), marker(CAShapeLayer, Int) }
+    private enum Entry { case shape(CAShapeLayer), spotlight(CAShapeLayer), marker(CAShapeLayer, Int), text(CAShapeLayer) }
     private var history: [Entry] = []
+    /// Label being typed (Text tool), nil otherwise. See TextTool.swift.
+    var textEntry: TextEntry?
 
     // Current gesture
     private var current: CAShapeLayer?
@@ -31,8 +33,10 @@ final class CanvasView: NSView {
         history.reduce(0) { m, e in if case .marker(_, let n) = e { return max(m, n) }; return m }
     }
     var markerCount: Int { history.reduce(0) { m, e in if case .marker = e { return m + 1 }; return m } }
+    /// Committed Text labels on this screen.
+    var textCount: Int { history.reduce(0) { m, e in if case .text = e { return m + 1 }; return m } }
 
-    var hasContent: Bool { !history.isEmpty || current != nil || !boardLayer.isHidden }
+    var hasContent: Bool { !history.isEmpty || current != nil || textEntry != nil || !boardLayer.isHidden }
 
     init(frame: NSRect, scale: CGFloat) {
         self.scale = scale
@@ -77,12 +81,27 @@ final class CanvasView: NSView {
     // MARK: Keys — fallback path only. Drawing-mode keys are Carbon hotkeys (see OverlayController);
     // these fire only if the panel somehow has keyboard focus, and go through the same deduplicated handler.
 
-    override func keyDown(with event: NSEvent) { _ = controller?.handleKey(event) }
+    // While a Text label is being typed, every key goes to the editor instead (TextTool.swift).
+
+    override func keyDown(with event: NSEvent) {
+        if isEditingText { textKeyDown(event); return }
+        _ = controller?.handleKey(event)
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isEditingText {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "v" { pasteText(); return true }
+            // Esc / Return must reach the editor even if AppKit routes them here first.
+            if !hasMarkedText(), [53, 36, 76].contains(Int(event.keyCode)) { textKeyDown(event); return true }
+            return false
+        }
         guard controller?.isDrawing == true else { return false }
         return controller?.handleKey(event) ?? false
     }
-    override func cancelOperation(_ sender: Any?) { controller?.perform(.exit, source: "panel-cancel") }
+    override func cancelOperation(_ sender: Any?) {
+        if isEditingText { controller?.endTextEntry(commit: false); return }
+        controller?.perform(.exit, source: "panel-cancel")
+    }
 
     override func flagsChanged(with event: NSEvent) {
         flags = event.modifierFlags
@@ -91,6 +110,7 @@ final class CanvasView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard controller?.isDrawing == true else { return }
+        // While typing a label the wheel resizes that label (its size follows the stroke width), never a stroke.
         let dy = event.scrollingDeltaY
         scrollAccumulator += event.hasPreciseScrollingDeltas ? dy / 8 : dy
         let steps = Int(scrollAccumulator.rounded(.towardZero))
@@ -110,15 +130,18 @@ final class CanvasView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard controller?.isDrawing == true else { return }
+        guard let controller = controller, controller.isDrawing else { return }
+        // A click while a label is being typed (on any screen) commits it, and does nothing else.
+        if controller.isEditingText { controller.endTextEntry(commit: true); return }
         window?.makeKey()
         NSCursor.crosshair.set()
         let p = convert(event.locationInWindow, from: nil)
+        if Settings.shared.tool == .text { controller.beginTextEntry(on: self, at: p); return }
         start = p; last = p; points = [p]
         flags = event.modifierFlags
         baseTool = Settings.shared.tool
         activeTool = CanvasView.effectiveTool(base: baseTool, flags: flags)
-        if activeTool == .counter { markerNumber = controller?.nextMarkerNumber() ?? 1 }
+        if activeTool == .counter { markerNumber = controller.nextMarkerNumber() }
 
         let l = CAShapeLayer()
         l.contentsScale = scale
@@ -213,6 +236,8 @@ final class CanvasView: NSView {
             l.fillColor = NSColor.black.withAlphaComponent(0.6).cgColor
             l.strokeColor = nil
             l.fillRule = .evenOdd
+        case .text:
+            break // labels never go through the gesture path (see TextTool.swift)
         case .counter:
             // One bubble+tail outline, non-zero fill, thin white border; the number is a white glyph sublayer.
             l.fillColor = color
@@ -227,7 +252,7 @@ final class CanvasView: NSView {
         CATransaction.commit()
     }
 
-    private func setShadow(_ l: CALayer) {
+    func setShadow(_ l: CALayer) {
         l.shadowColor = NSColor.black.cgColor
         l.shadowOpacity = 0.35
         l.shadowRadius = 3
@@ -284,6 +309,8 @@ final class CanvasView: NSView {
             }
         case .pen:
             path = Geometry.smoothPath(points)
+        case .text:
+            path = nil
         case .spotlight:
             let p = CGMutablePath()
             p.addRect(bounds)
@@ -303,7 +330,11 @@ final class CanvasView: NSView {
     func refreshCurrent() {
         applyStyle()
         updatePreview()
+        refreshText()
     }
+
+    /// A Text label just committed (TextTool.swift): it stays as a static layer and joins the undo history.
+    func recordText(_ l: CAShapeLayer) { history.append(.text(l)) }
 
     /// Drops the in-progress gesture without committing it (Esc pressed mid-drag). The later mouseUp is a no-op.
     func cancelCurrent() {
@@ -333,7 +364,7 @@ final class CanvasView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         switch e {
-        case .shape(let l), .marker(let l, _): l.removeFromSuperlayer()
+        case .shape(let l), .marker(let l, _), .text(let l): l.removeFromSuperlayer()
         case .spotlight(let l):
             l.removeFromSuperlayer()
             visibleSpotlight()?.isHidden = false
@@ -346,8 +377,9 @@ final class CanvasView: NSView {
         CATransaction.setDisableActions(true)
         current?.removeFromSuperlayer()
         current = nil
+        finishText(commit: false) // normally already ended by the controller; never leave an orphan editor
         for e in history {
-            switch e { case .shape(let l), .spotlight(let l), .marker(let l, _): l.removeFromSuperlayer() }
+            switch e { case .shape(let l), .spotlight(let l), .marker(let l, _), .text(let l): l.removeFromSuperlayer() }
         }
         history.removeAll()
         boardLayer.isHidden = true

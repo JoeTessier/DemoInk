@@ -161,6 +161,103 @@ extension OverlayController {
         check(msPath < 5 && msStroke < 1000,
               String(format: "pen: smoothPath(1200 pts) %.2f ms, 1200 drag events %.0f ms total (%.2f ms/event)", msPath, msStroke, msStroke / 1200))
 
+        // Text tool: hotkeys suspended during the entry, focus handed back, undo / clear / Esc / ⌃§ / edges / wheel.
+        let front0 = NSWorkspace.shared.frontmostApplication
+        let frontName = front0?.bundleIdentifier ?? front0?.localizedName ?? "?"
+        func spin(_ seconds: Double) {
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end { RunLoop.main.run(mode: .default, before: min(end, Date().addingTimeInterval(0.02))) }
+        }
+        func key(_ code: UInt16, _ chars: String, _ flags: NSEvent.ModifierFlags = []) {
+            let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                     context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                     isARepeat: false, keyCode: code)!
+            canvas.keyDown(with: e)
+        }
+        func click(_ p: CGPoint) {
+            canvas.mouseDown(with: ev(.leftMouseDown, p))
+            canvas.mouseUp(with: ev(.leftMouseUp, p))
+        }
+        func type(_ s: String) { canvas.insertText(s, replacementRange: NSRange(location: NSNotFound, length: 0)) }
+        func frontRestored() -> Bool {
+            spin(0.7)
+            return NSWorkspace.shared.frontmostApplication == front0
+        }
+        Settings.shared.clearOnExit = false
+        Settings.shared.width = 8
+        let nMode = modeHotKeyCount
+        check(perform(.tool(.text), source: "selftest") && Settings.shared.tool == .text, "T selects Text in drawing mode")
+        let texts0 = canvas.textCount, layers0 = canvas.layerCount
+        click(CGPoint(x: cx - 300, y: cy + 100))
+        check(isEditingText && modeHotKeyCount == 0, "starting a label suspends every drawing-mode hotkey (0 registered, \(nMode) before)")
+        spin(0.5)
+        let frontDuring = NSWorkspace.shared.frontmostApplication
+        check(frontDuring == NSRunningApplication.current && NSApp.isActive && canvas.window?.isKeyWindow == true
+              && canvas.window?.firstResponder === canvas,
+              "during the entry: DemoInk frontmost (\(frontDuring?.bundleIdentifier ?? "?")), panel key, editor first responder")
+        check(abs((canvas.textEntry?.fontSize ?? 0) - 28) < 0.01, "label size 28 pt at width 8")
+        type("Hello")
+        key(36, "\r", .shift)                      // ⇧Return: new line
+        type("World!!")
+        key(51, "\u{7F}")                          // Backspace
+        key(123, "\u{F702}", [.function, .numericPad]) // ←
+        type("_")
+        let edited = canvas.textEntry?.string ?? "nil"
+        check(edited == "Hello\nWorld_!", "typing + ⇧Return + Backspace + ← give \"Hello\\nWorld_!\" (got \(edited.debugDescription))")
+        let f2 = canvas.textEntry?.layout?.frame ?? .zero
+        check(f2.height >= 2 * 28 && f2.width > 60, "label grows in width and height (\(Int(f2.width))x\(Int(f2.height)))")
+        key(36, "\r")                               // Return: commit
+        check(!isEditingText && isDrawing && modeHotKeyCount == nMode && canvas.textCount == texts0 + 1
+              && canvas.layerCount == layers0 + 1,
+              "Return commits ONE static layer (no ghost) and restores the \(nMode) hotkeys (now \(modeHotKeyCount))")
+        check(frontRestored(), "after the entry, the previously frontmost app (\(frontName)) is frontmost again")
+        perform(.undo, source: "selftest")
+        check(canvas.textCount == texts0 && canvas.layerCount == layers0, "Z removes the label")
+
+        click(CGPoint(x: cx - 300, y: cy + 100)); type("tmp")
+        key(53, "\u{1B}")                           // Esc during the entry
+        check(!isEditingText && isDrawing && modeHotKeyCount == nMode && canvas.textCount == texts0
+              && canvas.layerCount == layers0, "Esc cancels the entry, drops the label, drawing mode stays on, hotkeys restored")
+        check(frontRestored(), "focus restored after a cancelled entry")
+        click(CGPoint(x: cx, y: cy)); key(36, "\r")
+        check(!isEditingText && canvas.layerCount == layers0 && modeHotKeyCount == nMode, "an empty label is not kept")
+        click(CGPoint(x: cx - 200, y: cy)); type("Click")
+        click(CGPoint(x: cx + 200, y: cy - 100))
+        check(!isEditingText && canvas.textCount == texts0 + 1 && modeHotKeyCount == nMode,
+              "a click elsewhere commits (and does not start another label)")
+
+        click(CGPoint(x: cx - 200, y: cy - 200)); type("Big")
+        let fs0 = canvas.textEntry?.fontSize ?? 0, layersBeforeWheel = canvas.layerCount
+        if let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: 3, wheel2: 0, wheel3: 0),
+           let wheel = NSEvent(cgEvent: cg) { canvas.scrollWheel(with: wheel) }
+        let fs1 = canvas.textEntry?.fontSize ?? 0
+        check(isEditingText && fs1 > fs0 && canvas.layerCount == layersBeforeWheel,
+              "wheel during the entry resizes the label (\(fs0) → \(fs1) pt), no stroke drawn")
+        key(36, "\r")
+
+        click(CGPoint(x: b.maxX - 3, y: b.minY + 3)); type("Near the bottom-right corner\nsecond line\nthird line")
+        let fe = canvas.textEntry?.layout?.frame ?? .zero
+        check(b.insetBy(dx: 5, dy: 5).contains(fe), "label near the bottom-right edge shifts to stay on screen (\(fe))")
+        key(36, "\r")
+        let textsNow = canvas.textCount
+        perform(.clearAll, source: "selftest")
+        check(textsNow >= 3 && canvas.textCount == 0, "C clears the \(textsNow) labels")
+
+        click(CGPoint(x: cx, y: cy)); type("Toggle")
+        toggle()                                      // ⌃§ while typing
+        check(!isDrawing && !isEditingText && modeHotKeyCount == 0 && canvas.textCount == 1,
+              "⌃§ while typing commits the label, then leaves drawing mode with 0 hotkeys")
+        check(frontRestored(), "focus restored after ⌃§ mid-entry")
+        setDrawing(true)
+        click(CGPoint(x: cx, y: cy - 60)); type("x")
+        key(53, "\u{1B}")                           // 1st Esc: cancel the entry only
+        check(isDrawing && !isEditingText && canvas.textCount == 1, "1st Esc cancels the entry only")
+        perform(.exit, source: "selftest")           // 2nd Esc: the drawing-mode hotkey again
+        check(!isDrawing && canvas.textCount == 0 && modeHotKeyCount == 0, "2nd Esc exits drawing mode and clears the labels")
+        check(frontRestored(), "focus restored after the Esc sequence")
+        setDrawing(true)
+
         // Hotkey lifecycle: every exit path releases the modifier-less keys; re-entry never leaks or duplicates.
         let n = modeHotKeyCount
         check(n > 0 && modeKeyFailures.isEmpty, "\(n) drawing-mode hotkeys registered, none failed")
@@ -190,19 +287,68 @@ extension OverlayController {
         screensChanged()
         check(canvas.window != nil && canvas.layerCount == layersBefore && panelUnderMouse()?.canvas === canvas,
               "unchanged screen set keeps the panels and their \(layersBefore) layer(s)")
-        // Real display change while drawing: panels rebuilt, drawing mode / hotkeys / one panel per screen intact.
+        // Real display change while drawing AND typing: label committed, then panels rebuilt, hotkeys intact.
+        selectTool(.text)
+        canvas.mouseDown(with: ev(.leftMouseDown, CGPoint(x: cx, y: cy)))
+        canvas.insertText("Rebuild", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let editingBeforeRebuild = isEditingText && modeHotKeyCount == 0
         screensChanged(force: true)
+        check(editingBeforeRebuild && !isEditingText && isDrawing && modeHotKeyCount == n,
+              "display change while typing ends the entry and restores the \(n) hotkeys")
         let oldPanelDropped = !panels.contains { $0.canvas === canvas }
         check(isDrawing && modeHotKeyCount == n && panelCount == NSScreen.screens.count && oldPanelDropped,
               "screen rebuild while drawing keeps drawing mode (\(isDrawing)), \(modeHotKeyCount)/\(n) keys, \(panelCount) panel(s), old panel dropped (\(oldPanelDropped))")
         setDrawing(false)
         check(!isDrawing && modeHotKeyCount == 0, "exit after a screen rebuild releases every drawing-mode key")
-        // Termination while drawing: nothing left registered.
+        check(frontRestored(), "focus restored after the display change")
+        // Termination while drawing and typing: nothing left registered, focus handed back.
         setDrawing(true)
+        if let c = panelUnderMouse()?.canvas {
+            beginTextEntry(on: c, at: CGPoint(x: c.bounds.midX, y: c.bounds.midY))
+            c.insertText("Quit", replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+        let editingBeforeQuit = isEditingText && modeHotKeyCount == 0
         appDelegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         check(!isDrawing && modeHotKeyCount == 0 && appDelegate.globalHotKeyCount == 0,
               "applicationWillTerminate releases drawing-mode and global hotkeys")
+        check(editingBeforeQuit && !isEditingText && frontRestored(), "termination mid-entry ends it and restores focus")
         NSLog("DemoInk selftest: keyboard state machine %@", ok ? "PASS" : "FAIL")
+    }
+
+    /// DEMOINK_SELFTEST=text: labels in several colours and sizes (multi-line, one at the bottom-right edge) plus a
+    /// label still being typed (caret visible), left on screen for `screencapture`. DEMOINK_BOARD=white|black adds a board.
+    func runTextGallery(on canvas: CanvasView) {
+        guard let window = canvas.window else { return }
+        let saved = (Settings.shared.tool, Settings.shared.colorIndex, Settings.shared.width)
+        setDrawing(true)
+        switch ProcessInfo.processInfo.environment["DEMOINK_BOARD"] {
+        case "white": setBoard(.white)
+        case "black": setBoard(.black)
+        default: break
+        }
+        func click(_ p: CGPoint) {
+            canvas.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: 0,
+                                                      windowNumber: window.windowNumber, context: nil,
+                                                      eventNumber: 0, clickCount: 1, pressure: 1)!)
+        }
+        func label(_ s: String, _ p: CGPoint, color: Int, width: CGFloat, commit: Bool = true) {
+            selectTool(.text); selectColor(color); Settings.shared.width = width
+            click(p)
+            canvas.insertText(s, replacementRange: NSRange(location: NSNotFound, length: 0))
+            if commit { endTextEntry(commit: true) }
+        }
+        let b = canvas.bounds
+        let cx = b.midX, cy = b.midY
+        label("Small red 2", CGPoint(x: cx - 600, y: cy + 250), color: 0, width: 2)
+        label("Default 28 pt (width 8)", CGPoint(x: cx - 600, y: cy + 150), color: 4, width: 8)
+        label("Big green 20", CGPoint(x: cx - 600, y: cy + 20), color: 3, width: 20)
+        label("Multi-line label\nsecond line, yellow\nthird", CGPoint(x: cx + 100, y: cy + 250), color: 2, width: 6)
+        label("Clamped at the bottom-right edge\nstays on screen", CGPoint(x: b.maxX - 4, y: b.minY + 4), color: 1, width: 10)
+        label("Typing in progress", CGPoint(x: cx - 600, y: cy - 200), color: 4, width: 10, commit: false)
+        Settings.shared.tool = saved.0; Settings.shared.colorIndex = saved.1; Settings.shared.width = saved.2
+        onStateChange?()
+        NSLog("DemoInk text gallery: %d layers, %d labels committed, editing: %d", canvas.layerCount, canvas.textCount,
+              isEditingText ? 1 : 0)
     }
 
     /// DEMOINK_SELFTEST=shapes: ovals/circles and Count markers 1…12 (incl. every edge and corner), left on screen

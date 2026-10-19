@@ -29,13 +29,14 @@ par exemple pour laisser ⌃⌥1 à une autre app. Un raccourci déjà pris par 
 | S | Projecteur (spot) : assombrit l'écran sauf la zone tracée |
 | P | Stylo (main levée, lissé) |
 | N | Compteur : chaque clic pose une bulle numérotée 1, 2, 3… (cercle plein + queue pointant exactement le point cliqué, en haut à droite, retournée près des bords et sous la barre des menus). Numérotation globale à tous les écrans ; Z/⌘Z retire la dernière bulle et décrémente ; tout effacement (C, E, Échap, ⌃⌥C, effacement en quittant) repart à 1 |
+| T | Texte : cliquer pour poser une étiquette, taper, Entrée pour valider (voir « Outil Texte » ci-dessous) |
 | 1 … 5 | Rouge, orange, jaune, vert, bleu (même en plein tracé) |
 | [ / ] (ou - / +), molette | Épaisseur du trait |
 | ⌘-glisser | Rectangle temporaire (depuis Flèche, Rectangle, Ovale, Stylo ou Compteur) |
 | ⌥-glisser | Flèche temporaire (depuis Flèche, Rectangle, Ovale, Stylo ou Compteur) |
 | W | Tableau blanc (même touche pour le retirer) |
 | K | Tableau noir (même touche pour le retirer) |
-| Z ou ⌘Z | Annuler le dernier tracé de l'écran sous la souris |
+| Z ou ⌘Z | Annuler le dernier tracé (ou la dernière étiquette) de l'écran sous la souris |
 | C ou E | Tout effacer (tableau compris) |
 | Échap | Quitter le mode dessin **et tout effacer** (tracés, projecteur, tableau — quel que soit le réglage), même en plein tracé ou avec ⇧/⌘/⌥/⌃ enfoncé (sauf ⌘⌥Échap, réservé à Forcer à quitter) |
 
@@ -45,9 +46,38 @@ Outil, couleur, épaisseur et cette option sont mémorisés.
 
 Les chiffres utilisent les touches physiques de la rangée du haut : pas besoin de Maj sur un clavier AZERTY.
 
+### Outil Texte (T)
+
+| Pendant la saisie | Action |
+|---|---|
+| Clic (outil Texte) | Commence une étiquette à cet endroit (curseur clignotant) |
+| Lettres, chiffres, ⌫, ⌦, ← → ↑ ↓, ⌥← / ⌥→, ⌘← / ⌘→, ⌥⌫, ⌘⌫ | Saisie et édition standard (touches mortes et accents compris) |
+| ⌘V | Coller du texte brut |
+| ⇧Entrée (ou ⌥Entrée) | Nouvelle ligne |
+| Entrée, ou clic ailleurs | Valider l'étiquette (le clic valide seulement, il n'en commence pas une autre) |
+| Échap | Annuler l'étiquette en cours (sans quitter le mode dessin). Un 2ᵉ Échap quitte et efface tout, comme d'habitude |
+| Molette | Taille de l'étiquette en cours (bulle « Texte N pt ») |
+| ⌃⌥1 … ⌃⌥5 | Couleur de l'étiquette en cours |
+| ⌃§ / ⌃⌥A, changement d'écrans | Valident l'étiquette non vide, puis agissent normalement |
+
+- Police système grasse, couleur courante, même ombre légère que les autres annotations. Taille liée à l'épaisseur :
+  28 pt à l'épaisseur 8 (16 + 1,5 × épaisseur, de 17,5 à 52 pt).
+- L'étiquette grandit en largeur et en hauteur ; près du bord droit ou bas, elle se décale pour rester à l'écran.
+- L'éditeur n'est pas un champ système : c'est l'étiquette elle-même (fond transparent, texte dans la couleur
+  d'encre, lisible en mode sombre) plus un curseur. À la validation, seul le curseur disparaît : aucune copie en double.
+- Une étiquette validée est une annotation comme les autres : Z/⌘Z la retire, C/E/Échap/⌃⌥C/effacement en quittant l'effacent.
+- **Focus clavier** : pendant la saisie, les touches du mode dessin sont désenregistrées (sinon T, 1, Échap… seraient
+  captées) et DemoInk **s'active** le temps de la saisie (un panneau non activant d'une app jamais active ne reçoit pas
+  les frappes). L'app qui était au premier plan est réactivée dès la fin de la saisie (Entrée, clic, Échap, ⌃§,
+  changement d'écrans, fin de l'app), et les touches du mode dessin sont réenregistrées. Pendant la saisie, l'app
+  présentée apparaît donc inactive (barre de titre grisée). Si l'on change d'app (⌘Tab) en pleine saisie, l'étiquette
+  est validée et l'app choisie garde le focus.
+- Limites : pas de sélection de texte, pas de modification d'une étiquette après validation, pas de ⌘/⌥-glisser
+  depuis l'outil Texte.
+
 ### Comment les touches du mode dessin arrivent à l'app
 
-DemoInk ne s'active jamais (l'app présentée garde le focus clavier). Les touches ci-dessus sont donc enregistrées
+DemoInk ne s'active jamais (l'app présentée garde le focus clavier), sauf le temps de saisir une étiquette Texte (voir plus haut). Les touches ci-dessus sont donc enregistrées
 comme raccourcis globaux Carbon **sans modificateur** à l'entrée du mode dessin, et désenregistrées immédiatement
 à la sortie : hors mode dessin, aucune touche n'est interceptée. Les lettres suivent la disposition du clavier,
 les chiffres la position physique.
@@ -71,7 +101,7 @@ Résultat : `dist/DemoInk.app` (signature ad hoc).
 
 L'icône crayon apparaît dans la barre des menus. L'overlay s'arrête juste sous la barre des menus : elle reste visible
 et cliquable en mode dessin (tableau et projecteur compris). Hors mode dessin, seule l'icône est affichée (largeur minimale).
-En mode dessin, l'icône est cerclée et suivie de l'outil actif (`Arrow`, `Rect.`, `Oval`, `Hilite`, `Spot`, `Pen`, `Count`)
+En mode dessin, l'icône est cerclée et suivie de l'outil actif (`Arrow`, `Rect.`, `Oval`, `Hilite`, `Spot`, `Pen`, `Count`, `Text`)
 et d'une pastille de la couleur courante. Le libellé se met à jour
 instantanément (touche, raccourci global ou menu) ; les surcharges temporaires ⌘/⌥-glisser ne le modifient pas.
 Il n'y a plus de bulle à l'écran pour l'outil ou la couleur : seule l'épaisseur du trait (molette, - / +) affiche
@@ -81,9 +111,10 @@ encore une bulle temporaire.
 
 | Variable | Effet |
 |---|---|
-| `DEMOINK_SELFTEST=1` | Un tracé par outil, ovales/cercles, compteur 1…12 (bords compris), annulation, effacement, ⌘/⌥ depuis Compteur, machine à états clavier, cycle de vie des raccourcis du mode dessin (0 touche enregistrée après chaque sortie : Échap, bascule, on/off/on, changement de disposition clavier, reconstruction des écrans en plein dessin, fin de l'app), géométrie des panneaux (sous la barre des menus, capturables), coût du stylo sur 1 200 événements (PASS/FAIL dans le log). Réglages restaurés à la fin (outil, couleur, épaisseur, effacement en quittant). Après ce test, les raccourcis globaux du processus sont libérés : relancer l'app. |
+| `DEMOINK_SELFTEST=1` | Un tracé par outil, ovales/cercles, compteur 1…12 (bords compris), annulation, effacement, ⌘/⌥ depuis Compteur, machine à états clavier, outil Texte (0 touche du mode dessin pendant la saisie et retour exact après validation/annulation/⌃§/changement d'écrans/fin de l'app, app précédente de nouveau au premier plan, ⇧Entrée/⌫/←, Échap n'annule que la saisie, Z, C, molette, bord d'écran ; texte inséré par programme), cycle de vie des raccourcis du mode dessin (0 touche enregistrée après chaque sortie : Échap, bascule, on/off/on, changement de disposition clavier, reconstruction des écrans en plein dessin, fin de l'app), géométrie des panneaux (sous la barre des menus, capturables), coût du stylo sur 1 200 événements (PASS/FAIL dans le log). Réglages restaurés à la fin (outil, couleur, épaisseur, effacement en quittant). Après ce test, les raccourcis globaux du processus sont libérés : relancer l'app. |
 | `DEMOINK_SELFTEST=arrows` | Galerie de flèches (épaisseurs 2/4/10/24, 8 directions, glissés courts), reste affichée pour `screencapture`. `DEMOINK_BOARD=white` ou `black` ajoute un tableau derrière. |
 | `DEMOINK_SELFTEST=shapes` | Galerie ovales/cercles + bulles 1…15 (chaque bord et coin, épaisseurs 1/8/24), reste affichée pour `screencapture` ; les points cliqués sont dans le log. |
+| `DEMOINK_SELFTEST=text` | Galerie d'étiquettes (3 couleurs et tailles, multiligne, une au bord bas-droit) + une étiquette en cours de saisie, reste affichée pour `screencapture`. `DEMOINK_BOARD=white` ou `black` ajoute un tableau. Active l'app (saisie en cours) jusqu'à ce qu'on la quitte. |
 | `DEMOINK_SELFTEST=menubar` | Passe en mode dessin, fait défiler outil + couleur toutes les secondes, puis quitte le mode dessin (icône seule). |
 
 Lancer le binaire directement : `DEMOINK_SELFTEST=arrows dist/DemoInk.app/Contents/MacOS/DemoInk`.

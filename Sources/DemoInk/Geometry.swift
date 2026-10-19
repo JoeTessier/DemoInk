@@ -95,22 +95,7 @@ enum Geometry {
             let font = CTFontCreateUIFontForLanguage(.emphasizedSystem, size, nil)
                 ?? CTFontCreateWithName("Helvetica-Bold" as CFString, size, nil)
             let attr = NSAttributedString(string: text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
-            let line = CTLineCreateWithAttributedString(attr)
-            let path = CGMutablePath()
-            for run in CTLineGetGlyphRuns(line) as! [CTRun] {
-                let runFont = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName as String] as! CTFont
-                let count = CTRunGetGlyphCount(run)
-                var gs = [CGGlyph](repeating: 0, count: count)
-                var ps = [CGPoint](repeating: .zero, count: count)
-                CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &gs)
-                CTRunGetPositions(run, CFRange(location: 0, length: 0), &ps)
-                for i in 0..<count {
-                    if let g = CTFontCreatePathForGlyph(runFont, gs[i], nil) {
-                        path.addPath(g, transform: CGAffineTransform(translationX: ps[i].x, y: ps[i].y))
-                    }
-                }
-            }
-            return path
+            return glyphPath(CTLineCreateWithAttributedString(attr))
         }
         var size = d * 0.56
         var path = glyphs(size)
@@ -120,6 +105,25 @@ enum Geometry {
         let b = path.boundingBoxOfPath
         var t = CGAffineTransform(translationX: c.x - b.midX, y: c.y - b.midY)
         return path.copy(using: &t) ?? path
+    }
+
+    /// Glyph outlines of one CoreText line, origin on the baseline at x = 0.
+    static func glyphPath(_ line: CTLine) -> CGMutablePath {
+        let path = CGMutablePath()
+        for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+            let runFont = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName as String] as! CTFont
+            let count = CTRunGetGlyphCount(run)
+            var gs = [CGGlyph](repeating: 0, count: count)
+            var ps = [CGPoint](repeating: .zero, count: count)
+            CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &gs)
+            CTRunGetPositions(run, CFRange(location: 0, length: 0), &ps)
+            for i in 0..<count {
+                if let g = CTFontCreatePathForGlyph(runFont, gs[i], nil) {
+                    path.addPath(g, transform: CGAffineTransform(translationX: ps[i].x, y: ps[i].y))
+                }
+            }
+        }
+        return path
     }
 
     static func roundedRectPath(_ r: CGRect, radius: CGFloat) -> CGPath {
