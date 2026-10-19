@@ -56,9 +56,10 @@ extension OverlayController {
         let activeAtStart = NSApp.isActive
         NSLog("DemoInk selftest: active at start: %d, frontmost: %@", activeAtStart ? 1 : 0,
               NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")
-        let saved = (Settings.shared.tool, Settings.shared.colorIndex, Settings.shared.width, Settings.shared.clearOnExit)
+        let saved = (Settings.shared.tool, Settings.shared.colorIndex, Settings.shared.width, Settings.shared.clearOnExit,
+                     Settings.shared.laserColorIndex)
         defer { Settings.shared.tool = saved.0; Settings.shared.colorIndex = saved.1; Settings.shared.width = saved.2
-                Settings.shared.clearOnExit = saved.3
+                Settings.shared.clearOnExit = saved.3; Settings.shared.laserColorIndex = saved.4
                 onStateChange?() }
         setDrawing(true)
         func ev(_ type: NSEvent.EventType, _ p: CGPoint, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
@@ -312,7 +313,163 @@ extension OverlayController {
         check(!isDrawing && modeHotKeyCount == 0 && appDelegate.globalHotKeyCount == 0,
               "applicationWillTerminate releases drawing-mode and global hotkeys")
         check(editingBeforeQuit && !isEditingText && frontRestored(), "termination mid-entry ends it and restores focus")
+        runLaserChecks(check, spin)
         NSLog("DemoInk selftest: keyboard state machine %@", ok ? "PASS" : "FAIL")
+    }
+
+    /// Laser (L): own colour (red by default), draws nothing, loop + blank cursor only while active, trail fades,
+    /// every exit path (tool change, Esc, ⌃§, display change, termination) stops the loop and restores the cursor.
+    private func runLaserChecks(_ check: (Bool, String) -> Void, _ spin: (Double) -> Void) {
+        setDrawing(true)
+        guard let canvas = panelUnderMouse()?.canvas, let window = canvas.window else { check(false, "laser: no panel"); return }
+        laser.followsSystemMouse = false // synthetic events only: the real mouse must not interfere
+        defer { laser.followsSystemMouse = true }
+        func ev(_ type: NSEvent.EventType, _ p: CGPoint, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: p, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        func overPanel() -> Bool { panels.contains { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } }
+        func laserHiddenEverywhere() -> Bool { panels.allSatisfy { !$0.canvas.laserVisible && $0.canvas.laserTrailEmpty } }
+        func stopped() -> Bool { !laser.isRunning && !laser.isLinkRunning && laserHiddenEverywhere() }
+        let b = canvas.bounds, cx = b.midX, cy = b.midY
+
+        let reg = UserDefaults.standard.volatileDomain(forName: UserDefaults.registrationDomain)["laserColorIndex"] as? Int
+        check(reg == 0 && palette[Settings.defaultLaserColorIndex].name == "Rouge", "laser colour defaults to red (registered default \(reg ?? -1))")
+        let lKey = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                                    characters: "l", charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37)!
+        let lShift = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.shift], timestamp: 0, windowNumber: 0,
+                                      context: nil, characters: "L", charactersIgnoringModifiers: "L", isARepeat: false, keyCode: 37)!
+        check(OverlayController.action(for: lKey) == .tool(.laser) && OverlayController.action(for: lShift) == .tool(.laser)
+              && modeKeyFailures.isEmpty, "L and ⇧L map to Laser, all drawing-mode keys registered")
+
+        selectTool(.arrow)
+        check(!laser.isRunning && !laser.isLinkRunning, "no laser loop while drawing with another tool")
+        check(perform(.tool(.laser), source: "selftest") && Settings.shared.tool == .laser && laser.isRunning && laser.isLinkRunning,
+              "L selects Laser and starts the animation loop")
+        let expected = overPanel() ? LaserPointer.blankCursor : NSCursor.arrow
+        check(drawingCursor === LaserPointer.blankCursor && NSCursor.current === expected,
+              "cursor is blank over the panels while Laser (mouse over a panel: \(overPanel()))")
+
+        // Colours: the laser has its own.
+        let drawColor = Settings.shared.colorIndex
+        let lc = drawColor == 3 ? 2 : 3
+        perform(.color(lc), source: "selftest")
+        check(Settings.shared.laserColorIndex == lc && Settings.shared.colorIndex == drawColor && Settings.shared.activeColorIndex == lc,
+              "1–5 with Laser change the laser colour (\(lc)), not the drawing colour (\(drawColor))")
+        selectColor(4) // ⌃⌥5 and the menu go through selectColor too
+        check(Settings.shared.laserColorIndex == 4 && Settings.shared.colorIndex == drawColor, "⌃⌥5 with Laser changes the laser colour only")
+
+        // A drag draws nothing; ⌘-drag still draws a temporary rectangle.
+        let h0 = canvas.historyCount, l0 = canvas.layerCount
+        canvas.mouseDown(with: ev(.leftMouseDown, CGPoint(x: cx - 200, y: cy)))
+        for i in 1...20 { canvas.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: cx - 200 + CGFloat(i) * 15, y: cy + CGFloat(i) * 5))) }
+        canvas.mouseUp(with: ev(.leftMouseUp, CGPoint(x: cx + 100, y: cy + 100)))
+        check(canvas.historyCount == h0 && canvas.layerCount == l0, "a drag with Laser adds no layer and no undo entry")
+        canvas.mouseDown(with: ev(.leftMouseDown, CGPoint(x: cx - 100, y: cy - 100), [.command]))
+        canvas.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: cx + 50, y: cy - 20), [.command]))
+        canvas.mouseUp(with: ev(.leftMouseUp, CGPoint(x: cx + 50, y: cy - 20), [.command]))
+        check(canvas.historyCount == h0 + 1 && canvas.layerCount == l0 + 1 && Settings.shared.tool == .laser,
+              "⌘-drag from Laser draws a rectangle (tool stays Laser)")
+        canvas.undo()
+
+        // Trail: present mid-motion, gone ~1 s after the motion stops; the dot follows the last position.
+        var lastP = CGPoint.zero
+        for i in 0..<30 {
+            lastP = CGPoint(x: cx - 300 + CGFloat(i) * 20, y: cy + sin(CGFloat(i) / 4) * 80)
+            canvas.mouseMoved(with: ev(.mouseMoved, lastP))
+            spin(1.0 / 60)
+        }
+        let mid = laser.trailSampleCount, midPath = !canvas.laserTrailEmpty
+        let dp = canvas.laserDotPosition
+        check(mid > 3 && midPath && canvas.laserVisible && hypot(dp.x - lastP.x, dp.y - lastP.y) < 0.5,
+              "mid-motion: dot at the mouse, trail of \(mid) samples drawn")
+        spin(1.0)
+        check(laser.trailIsEmpty && canvas.laserTrailEmpty && canvas.laserVisible, "1 s after the motion stops the trail is empty, the dot remains")
+        let ticks0 = laser.tickCount
+        spin(0.3)
+        check(laser.tickCount > ticks0, "loop ticking while Laser is active (\(laser.tickCount - ticks0) frames in 0.3 s)")
+        if let other = panels.first(where: { $0.canvas !== canvas }) {
+            laser.moved(to: CGPoint(x: other.frame.midX, y: other.frame.midY))
+            spin(0.1)
+            check(other.canvas.laserVisible && !canvas.laserVisible && canvas.laserTrailEmpty,
+                  "moving to another screen: dot there, nothing left on the first screen")
+            laser.moved(to: window.convertPoint(toScreen: lastP))
+            spin(0.1)
+        }
+
+        // Exit paths.
+        check(perform(.tool(.pen), source: "selftest") && stopped() && NSCursor.current === NSCursor.crosshair,
+              "leaving Laser (P) stops the loop, hides the dot, crosshair back")
+        perform(.color(2), source: "selftest")
+        check(Settings.shared.colorIndex == 2 && Settings.shared.laserColorIndex == 4, "outside Laser, 1–5 change the drawing colour only")
+        perform(.tool(.laser), source: "selftest")
+        check(laser.isRunning && Settings.shared.activeColorIndex == 4, "back to Laser: loop restarted, laser colour kept")
+        perform(.exit, source: "selftest")
+        check(!isDrawing && stopped() && NSCursor.current === NSCursor.arrow, "Esc stops the laser loop and restores the arrow")
+        check(Settings.shared.tool == .laser && !laser.isRunning, "Laser selected but drawing mode off: no loop")
+        setDrawing(true)
+        check(laser.isRunning, "drawing mode on with Laser: loop running")
+        toggle()
+        check(!isDrawing && stopped() && NSCursor.current === NSCursor.arrow, "⌃§ stops the laser loop and restores the arrow")
+        setDrawing(true)
+        screensChanged(force: true)
+        check(isDrawing && laser.isRunning && laser.isLinkRunning && panelCount == NSScreen.screens.count
+              && drawingCursor === LaserPointer.blankCursor, "display change: panels rebuilt, laser restarted on them")
+        terminate()
+        check(!isDrawing && stopped() && modeHotKeyCount == 0 && NSCursor.current === NSCursor.arrow,
+              "termination stops the laser loop and restores the arrow")
+        setDrawing(true)
+        selectTool(.arrow)
+        setDrawing(false)
+        check(stopped(), "laser idle at the end")
+    }
+
+    /// DEMOINK_SELFTEST=laser: Laser in drawing mode, the dot moved along a figure-eight by synthetic mouseMoved
+    /// events (120 Hz), pausing 1 s every 4 s so the tail can be seen retracting. Runs DEMOINK_LASER_SECONDS
+    /// (default 20), then restores tool + laser colour and leaves drawing mode. DEMOINK_BOARD=white|black adds a board,
+    /// DEMOINK_LASER_COLOR=1…5 picks the laser colour.
+    func runLaserDemo(on canvas: CanvasView) {
+        guard let window = canvas.window else { return }
+        let env = ProcessInfo.processInfo.environment
+        let saved = (Settings.shared.tool, Settings.shared.laserColorIndex)
+        setDrawing(true)
+        switch env["DEMOINK_BOARD"] {
+        case "white": setBoard(.white)
+        case "black": setBoard(.black)
+        default: break
+        }
+        selectTool(.laser)
+        if let s = env["DEMOINK_LASER_COLOR"], let i = Int(s), (1...5).contains(i) { selectColor(i - 1) }
+        laser.followsSystemMouse = false
+        let seconds = Double(env["DEMOINK_LASER_SECONDS"] ?? "") ?? 20
+        let b = canvas.bounds, cx = b.midX, cy = b.midY
+        let t0 = CACurrentMediaTime()
+        var motionTime: Double = 0, lastT = t0
+        NSLog("DemoInk laser demo: %.0f s on canvas %.0fx%.0f, colour %@", seconds, b.width, b.height, Settings.shared.laserColor.name)
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            let now = CACurrentMediaTime()
+            let e = now - t0
+            if e > seconds {
+                t.invalidate()
+                self.laser.followsSystemMouse = true
+                Settings.shared.laserColorIndex = saved.1
+                self.selectTool(saved.0)
+                self.setDrawing(false)
+                NSLog("DemoInk laser demo: done (laser running: %d)", self.laser.isRunning ? 1 : 0)
+                return
+            }
+            let paused = e.truncatingRemainder(dividingBy: 4) > 3
+            if !paused { motionTime += now - lastT }
+            lastT = now
+            if paused { return }
+            let p = CGPoint(x: cx + 480 * sin(motionTime * 1.3), y: cy + 220 * sin(motionTime * 2.6))
+            canvas.mouseMoved(with: NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [],
+                                                       timestamp: ProcessInfo.processInfo.systemUptime,
+                                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                       clickCount: 0, pressure: 0)!)
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// DEMOINK_SELFTEST=text: labels in several colours and sizes (multi-line, one at the bottom-right edge) plus a

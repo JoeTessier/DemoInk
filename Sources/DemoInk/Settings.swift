@@ -1,7 +1,7 @@
 import AppKit
 
 enum Tool: String, CaseIterable {
-    case arrow, rectangle, oval, highlighter, spotlight, pen, counter, text
+    case arrow, rectangle, oval, highlighter, spotlight, pen, counter, text, laser
 
     var key: String {
         switch self {
@@ -13,6 +13,7 @@ enum Tool: String, CaseIterable {
         case .oval: return "o"
         case .counter: return "n"
         case .text: return "t"
+        case .laser: return "l"
         }
     }
 
@@ -26,6 +27,7 @@ enum Tool: String, CaseIterable {
         case .oval: return "Ovale"
         case .counter: return "Compteur"
         case .text: return "Texte"
+        case .laser: return "Laser"
         }
     }
 
@@ -40,6 +42,7 @@ enum Tool: String, CaseIterable {
         case .oval: return "Oval"
         case .counter: return "Count"
         case .text: return "Text"
+        case .laser: return "Laser"
         }
     }
 
@@ -53,6 +56,7 @@ enum Tool: String, CaseIterable {
         case .oval: return "oval"
         case .counter: return "1.circle.fill"
         case .text: return "textformat"
+        case .laser: return "smallcircle.filled.circle"
         }
     }
 }
@@ -85,6 +89,7 @@ final class Settings {
     private let defaults = UserDefaults.standard
     private enum Key {
         static let tool = "tool", color = "colorIndex", width = "strokeWidth", clearOnExit = "clearOnExit"
+        static let laserColor = "laserColorIndex"
     }
 
     static let minWidth: CGFloat = 1
@@ -94,17 +99,27 @@ final class Settings {
     var colorIndex: Int { didSet { defaults.set(colorIndex, forKey: Key.color) } }
     var width: CGFloat { didSet { defaults.set(Double(width), forKey: Key.width) } }
     var clearOnExit: Bool { didSet { defaults.set(clearOnExit, forKey: Key.clearOnExit) } }
+    /// Laser pointer colour: separate from the drawing colour, red by default.
+    var laserColorIndex: Int { didSet { defaults.set(laserColorIndex, forKey: Key.laserColor) } }
+    static let defaultLaserColorIndex = 0 // Rouge
 
     var color: InkColor { palette[colorIndex] }
+    var laserColor: InkColor { palette[laserColorIndex] }
+    /// Colour the 1–5 keys act on and the menu-bar dot shows: the laser's while Laser is the tool.
+    var activeColorIndex: Int { tool == .laser ? laserColorIndex : colorIndex }
+    var activeColor: InkColor { palette[activeColorIndex] }
 
     private init() {
         defaults.register(defaults: [Key.tool: Tool.arrow.rawValue, Key.color: 0,
-                                     Key.width: 4.0, Key.clearOnExit: false])
+                                     Key.width: 4.0, Key.clearOnExit: false,
+                                     Key.laserColor: Settings.defaultLaserColorIndex])
         tool = Tool(rawValue: defaults.string(forKey: Key.tool) ?? "") ?? .arrow
         let c = defaults.integer(forKey: Key.color)
         colorIndex = palette.indices.contains(c) ? c : 0
         let w = CGFloat(defaults.double(forKey: Key.width))
         width = min(max(w, Settings.minWidth), Settings.maxWidth)
         clearOnExit = defaults.bool(forKey: Key.clearOnExit)
+        let lc = defaults.integer(forKey: Key.laserColor)
+        laserColorIndex = palette.indices.contains(lc) ? lc : Settings.defaultLaserColorIndex
     }
 }

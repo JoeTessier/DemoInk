@@ -90,7 +90,14 @@ final class OverlayController {
     private var activatedForText = false
     var isEditingText: Bool { textCanvas?.isEditingText == true }
 
+    /// Laser pointer: its animation loop runs only while `laserActive`.
+    let laser = LaserPointer()
+    var laserActive: Bool { isDrawing && Settings.shared.tool == .laser }
+    /// Cursor over the panels in drawing mode: crosshair, or blank while the laser dot replaces it.
+    var drawingCursor: NSCursor { laserActive ? LaserPointer.blankCursor : .crosshair }
+
     init() {
+        laser.controller = self
         rebuildPanels()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
@@ -130,6 +137,7 @@ final class OverlayController {
     }
 
     private func rebuildPanels() {
+        laser.stop() // restarted on the new panels by applyMode
         panels.forEach { $0.canvas.cancelCurrent(); $0.orderOut(nil); $0.close() }
         panels = NSScreen.screens.map { screen in
             let p = OverlayPanel(screen: screen)
@@ -149,7 +157,7 @@ final class OverlayController {
         } else if selftest == "menubar" {
             // Cycles tool+colour once per second through the hotkey/menu entry points (menu-bar label check).
             // Drawing mode is ON during the cycle (the label only exists then) and OFF at the end (icon only).
-            let prev = (Settings.shared.tool, Settings.shared.colorIndex)
+            let prev = (Settings.shared.tool, Settings.shared.colorIndex, Settings.shared.laserColorIndex)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.setDrawing(true) }
             for (i, t) in Tool.allCases.enumerated() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(i)) {
@@ -158,7 +166,8 @@ final class OverlayController {
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(Tool.allCases.count)) {
-                self.selectTool(prev.0); self.selectColor(prev.1)
+                self.selectTool(prev.0)
+                Settings.shared.colorIndex = prev.1; Settings.shared.laserColorIndex = prev.2
                 self.setDrawing(false)
                 NSLog("DemoInk menubar test: drawing mode OFF (icon only)")
             }
@@ -168,6 +177,8 @@ final class OverlayController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runTextGallery(on: p.canvas) }
         } else if selftest == "shapes", let p = panelUnderMouse() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runShapesGallery(on: p.canvas) }
+        } else if selftest == "laser", let p = panelUnderMouse() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.runLaserDemo(on: p.canvas) }
         }
     }
 
@@ -211,7 +222,7 @@ final class OverlayController {
                 p.makeKeyAndOrderFront(nil)
                 p.makeFirstResponder(p.canvas)
             }
-            NSCursor.crosshair.set()
+            setDrawingCursor()
         } else {
             // Drop key status so keyboard focus returns to the presented app (which never stopped being active).
             for p in panels where p.isKeyWindow {
@@ -220,6 +231,20 @@ final class OverlayController {
             }
             NSCursor.arrow.set()
         }
+        updateLaser()
+    }
+
+    /// Starts / stops the laser loop to match `laserActive` (every tool change, mode change and panel rebuild).
+    private func updateLaser() {
+        if laserActive { laser.start() } else { laser.stop() }
+    }
+
+    /// Applies the drawing cursor now. The blank laser cursor is only set while the mouse is over a panel, so it
+    /// can never stick over the menu bar (e.g. Laser picked from the status menu).
+    private func setDrawingCursor() {
+        let m = NSEvent.mouseLocation
+        if laserActive && !panels.contains(where: { NSMouseInRect(m, $0.frame, false) }) { NSCursor.arrow.set(); return }
+        drawingCursor.set()
     }
 
     // MARK: Actions
@@ -239,11 +264,23 @@ final class OverlayController {
     func selectTool(_ t: Tool) {
         endTextEntry(commit: true) // tool picked from the menu while typing
         Settings.shared.tool = t
+        if isDrawing {
+            panels.forEach { $0.invalidateCursorRects(for: $0.canvas) }
+            setDrawingCursor()
+        }
+        updateLaser()
         onStateChange?() // menu-bar label is the feedback (no HUD)
     }
 
     func selectColor(_ i: Int) {
         guard palette.indices.contains(i) else { return }
+        // Laser is the tool: 1–5 / ⌃⌥1–5 / menu recolour the laser only, never the drawing colour.
+        if Settings.shared.tool == .laser {
+            Settings.shared.laserColorIndex = i
+            laser.refresh()
+            onStateChange?()
+            return
+        }
         Settings.shared.colorIndex = i
         panels.forEach { $0.canvas.refreshCurrent() } // in-progress stroke switches colour instantly
         onStateChange?() // menu-bar colour dot is the feedback (no HUD)
@@ -367,7 +404,8 @@ final class OverlayController {
             let fb: Int
             switch t { case .arrow: fb = kVK_ANSI_A; case .rectangle: fb = kVK_ANSI_R; case .highlighter: fb = kVK_ANSI_H
                        case .spotlight: fb = kVK_ANSI_S; case .pen: fb = kVK_ANSI_P
-                       case .oval: fb = kVK_ANSI_O; case .counter: fb = kVK_ANSI_N; case .text: fb = kVK_ANSI_T }
+                       case .oval: fb = kVK_ANSI_O; case .counter: fb = kVK_ANSI_N; case .text: fb = kVK_ANSI_T
+                       case .laser: fb = kVK_ANSI_L }
             letter(Character(t.key), fb, .tool(t))
         }
         letter("z", kVK_ANSI_Z, .undo)
@@ -402,6 +440,7 @@ final class OverlayController {
     func terminate() {
         endTextEntry(commit: true, restoreKeys: false)
         setDrawing(false)
+        laser.stop()
         modeKeys.unregisterAll()
     }
 

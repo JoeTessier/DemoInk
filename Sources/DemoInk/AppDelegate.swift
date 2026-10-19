@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.image = img
         button.imagePosition = .imageLeading
         if overlay.isDrawing {
-            button.attributedTitle = statusTitle(tool: s.tool, color: s.color.color)
+            button.attributedTitle = statusTitle(tool: s.tool, color: s.activeColor.color) // laser colour while Laser
             // Fixed width = widest tool label, so the item never jumps when the tool changes.
             let widest = Tool.allCases.map { statusTitle(tool: $0, color: .black).size().width }.max() ?? 0
             statusItem.length = ceil(widest + (img?.size.width ?? 16) + 14)
@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.imagePosition = .imageOnly
             statusItem.length = NSStatusItem.squareLength
         }
-        button.toolTip = (overlay.isDrawing ? "DemoInk — mode dessin actif" : "DemoInk") + " · \(s.tool.label) · \(s.color.name)"
+        button.toolTip = (overlay.isDrawing ? "DemoInk — mode dessin actif" : "DemoInk") + " · \(s.tool.label) · \(s.activeColor.name)"
     }
 
     /// " Arrow ●" — tool label in the menu-bar font, followed by a dot in the current ink colour.
@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (i, c) in palette.enumerated() {
             let it = item("\(c.name)  (\(i + 1))", #selector(chooseColor(_:)))
             it.tag = i
-            it.state = s.colorIndex == i ? .on : .off
+            it.state = s.activeColorIndex == i ? .on : .off // the laser's own colour while Laser
             it.image = swatch(c.color)
             menu.addItem(it)
         }

@@ -11,6 +11,12 @@ final class CanvasView: NSView {
     private let spotlightContainer = CALayer()
     let shapesContainer = CALayer()
     private let hud = HUDLayer()
+    // Laser pointer (Laser.swift): dot + tail + glow tail, above every annotation, never in the history.
+    let laserLayer = CALayer()
+    let laserGlow = CAShapeLayer()
+    let laserTrail = CAShapeLayer()
+    let laserDot = CALayer()
+    var laserDotColor: NSColor?
 
     private enum Entry { case shape(CAShapeLayer), spotlight(CAShapeLayer), marker(CAShapeLayer, Int), text(CAShapeLayer) }
     private var history: [Entry] = []
@@ -51,6 +57,23 @@ final class CanvasView: NSView {
             root.addSublayer(l)
         }
         boardLayer.isHidden = true
+        let noActions: [String: CAAction] = ["position": NSNull(), "bounds": NSNull(), "path": NSNull(), "contents": NSNull(),
+                                             "hidden": NSNull(), "fillColor": NSNull(), "opacity": NSNull()]
+        for l in [laserLayer, laserGlow, laserTrail] {
+            l.frame = bounds
+            l.contentsScale = scale
+            l.actions = noActions
+        }
+        laserGlow.fillRule = .nonZero
+        laserTrail.fillRule = .nonZero
+        laserDot.contentsScale = scale
+        laserDot.bounds = CGRect(x: 0, y: 0, width: LaserPointer.haloDiameter, height: LaserPointer.haloDiameter)
+        laserDot.actions = noActions
+        laserLayer.addSublayer(laserGlow)
+        laserLayer.addSublayer(laserTrail)
+        laserLayer.addSublayer(laserDot)
+        laserLayer.isHidden = true
+        root.addSublayer(laserLayer)
         hud.contentsScale = scale
         root.addSublayer(hud)
         root.actions = ["sublayers": NSNull()]
@@ -70,12 +93,26 @@ final class CanvasView: NSView {
                                        owner: self, userInfo: nil))
     }
 
-    private func updateCursor() { if controller?.isDrawing == true { NSCursor.crosshair.set() } }
+    /// Crosshair while drawing, a blank cursor while the laser dot stands in for it.
+    private func updateCursor() { if let c = controller, c.isDrawing { c.drawingCursor.set() } }
     override func cursorUpdate(with event: NSEvent) { updateCursor() }
-    override func mouseMoved(with event: NSEvent) { updateCursor() }
+    override func mouseMoved(with event: NSEvent) {
+        updateCursor()
+        feedLaser(event)
+    }
     override func mouseEntered(with event: NSEvent) { updateCursor() }
+    override func mouseExited(with event: NSEvent) {
+        // Leaving the panel (menu-bar strip): never leave the blank cursor behind.
+        if controller?.laserActive == true { NSCursor.arrow.set() }
+    }
     override func resetCursorRects() {
-        if controller?.isDrawing == true { addCursorRect(bounds, cursor: .crosshair) }
+        if let c = controller, c.isDrawing { addCursorRect(bounds, cursor: c.drawingCursor) }
+    }
+
+    /// Mouse position (screen coordinates) to the laser pointer, if it is running.
+    private func feedLaser(_ event: NSEvent) {
+        guard let c = controller, c.laser.isRunning, let w = window else { return }
+        c.laser.moved(to: w.convertPoint(toScreen: event.locationInWindow))
     }
 
     // MARK: Keys — fallback path only. Drawing-mode keys are Carbon hotkeys (see OverlayController);
@@ -123,7 +160,7 @@ final class CanvasView: NSView {
     // MARK: Drawing
 
     private static func effectiveTool(base: Tool, flags: NSEvent.ModifierFlags) -> Tool {
-        guard [.arrow, .rectangle, .oval, .pen, .counter].contains(base) else { return base }
+        guard [.arrow, .rectangle, .oval, .pen, .counter, .laser].contains(base) else { return base }
         if flags.contains(.command) { return .rectangle }
         if flags.contains(.option) { return .arrow }
         return base
@@ -134,9 +171,12 @@ final class CanvasView: NSView {
         // A click while a label is being typed (on any screen) commits it, and does nothing else.
         if controller.isEditingText { controller.endTextEntry(commit: true); return }
         window?.makeKey()
-        NSCursor.crosshair.set()
+        controller.drawingCursor.set()
+        feedLaser(event)
         let p = convert(event.locationInWindow, from: nil)
         if Settings.shared.tool == .text { controller.beginTextEntry(on: self, at: p); return }
+        // Laser: a plain click or drag draws nothing (only ⌘/⌥ overrides start a shape).
+        if CanvasView.effectiveTool(base: Settings.shared.tool, flags: event.modifierFlags) == .laser { return }
         start = p; last = p; points = [p]
         flags = event.modifierFlags
         baseTool = Settings.shared.tool
@@ -163,6 +203,7 @@ final class CanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        feedLaser(event)
         guard current != nil else { return }
         let p = convert(event.locationInWindow, from: nil)
         flags = event.modifierFlags
@@ -236,8 +277,8 @@ final class CanvasView: NSView {
             l.fillColor = NSColor.black.withAlphaComponent(0.6).cgColor
             l.strokeColor = nil
             l.fillRule = .evenOdd
-        case .text:
-            break // labels never go through the gesture path (see TextTool.swift)
+        case .text, .laser:
+            break // labels / laser never go through the gesture path (TextTool.swift, Laser.swift)
         case .counter:
             // One bubble+tail outline, non-zero fill, thin white border; the number is a white glyph sublayer.
             l.fillColor = color
@@ -262,6 +303,8 @@ final class CanvasView: NSView {
     private func updatePreview() {
         guard let l = current else { return }
         var newTool = CanvasView.effectiveTool(base: baseTool, flags: flags)
+        // From Laser, a gesture only exists as a ⌘/⌥ override: keep it a rectangle or an arrow for its whole life.
+        if baseTool == .laser, newTool == .laser { newTool = activeTool }
         // From Count, a gesture is either a marker (plain click) or a ⌘/⌥ override for its whole life:
         // modifiers pressed/released mid-drag only switch between rectangle and arrow.
         if baseTool == .counter, newTool == .counter || activeTool == .counter { newTool = activeTool }
@@ -309,7 +352,7 @@ final class CanvasView: NSView {
             }
         case .pen:
             path = Geometry.smoothPath(points)
-        case .text:
+        case .text, .laser:
             path = nil
         case .spotlight:
             let p = CGMutablePath()
@@ -348,6 +391,9 @@ final class CanvasView: NSView {
     }
 
     /// Number of annotation layers currently on screen (shapes + spotlights + in-progress + board). Diagnostics.
+    /// Undo entries on this screen (strokes, spotlights, markers, labels). Diagnostics.
+    var historyCount: Int { history.count }
+
     var layerCount: Int {
         (shapesContainer.sublayers?.count ?? 0) + (spotlightContainer.sublayers?.count ?? 0) + (boardLayer.isHidden ? 0 : 1)
     }
