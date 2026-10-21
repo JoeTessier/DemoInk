@@ -103,6 +103,11 @@ extension OverlayController {
         gesture(.oval, [CGPoint(x: cx, y: cy), CGPoint(x: cx + 1, y: cy)], color: 1)
         check(canvas.layerCount == n0, "a tiny oval drag is discarded")
 
+        // Arrows above every other shape: arrow, rectangle, pen, highlighter, ⌥-pen arrow, ovals were drawn in that order.
+        let z = (canvas.shapesContainer.sublayers ?? []).map(\.zPosition)
+        check(z.count >= 6 && z[0] == 1 && z[4] == 1 && [1, 2, 3].allSatisfy { z[$0] == 0 } && z[5...].allSatisfy { $0 == 0 },
+              "arrows (incl. ⌥ override) render above shapes drawn after them (zPosition \(z))")
+
         // Count markers 1…12, including near every screen edge and corner.
         clearAll()
         check(nextMarkerNumber() == 1, "Count starts at 1")

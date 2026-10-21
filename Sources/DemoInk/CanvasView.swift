@@ -187,7 +187,7 @@ final class CanvasView: NSView {
         l.contentsScale = scale
         l.frame = bounds
         l.actions = ["path": NSNull(), "fillColor": NSNull(), "strokeColor": NSNull(), "lineWidth": NSNull(),
-                     "hidden": NSNull(), "opacity": NSNull()]
+                     "hidden": NSNull(), "opacity": NSNull(), "zPosition": NSNull()]
         current = l
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -249,6 +249,9 @@ final class CanvasView: NSView {
         CATransaction.setDisableActions(true)
         l.shadowOpacity = 0
         l.lineDashPattern = nil
+        // Arrows sit above every other shape whatever the drawing order (siblings with equal zPosition
+        // keep insertion order). Set here so a ⌥/⌘ switch mid-drag moves the preview too; history untouched.
+        l.zPosition = activeTool == .arrow ? 1 : 0
         switch activeTool {
         case .arrow:
             // One closed outline, non-zero fill. The hairline stroke (same opaque colour, same path)
