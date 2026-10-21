@@ -13,6 +13,8 @@ BIN="$(swift build -c release --show-bin-path)/DemoInk"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DemoInk"
+# App icon (regenerate with: swift scripts/make_icon.swift)
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,6 +25,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>DemoInk</string>
     <key>CFBundleDisplayName</key><string>DemoInk</string>
     <key>CFBundleExecutable</key><string>DemoInk</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>

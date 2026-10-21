@@ -109,6 +109,20 @@ Seuls les Command Line Tools sont nécessaires (pas Xcode) :
 
 Résultat : `dist/DemoInk.app` (signature ad hoc).
 
+### Icône de l'application
+
+L'icône (Finder, Applications, Spotlight, Launchpad) reprend le symbole SF `pencil.tip` de la barre des menus,
+en blanc sur un carré arrondi au dégradé magenta → orange. Elle est générée par `scripts/make_icon.swift`
+et le résultat `Resources/AppIcon.icns` est versionné, donc `./build.sh` n'a pas besoin de la régénérer.
+Pour la régénérer (depuis la racine du dépôt) :
+
+```bash
+swift scripts/make_icon.swift            # réécrit Resources/AppIcon.icns
+swift scripts/make_icon.swift /tmp/i.png # idem + aperçu PNG 1024 px
+```
+
+Après réinstallation, `touch /Applications/DemoInk.app` force le Finder à rafraîchir l'icône.
+
 ## Installer
 
 1. Copier `dist/DemoInk.app` dans `/Applications`.
