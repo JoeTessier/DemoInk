@@ -37,8 +37,8 @@ par exemple pour laisser ⌃⌥1 à une autre app. Un raccourci déjà pris par 
 | ⌥-glisser | Flèche temporaire (depuis Flèche, Rectangle, Ovale, Stylo, Compteur ou Laser) |
 | W | Tableau blanc (même touche pour le retirer) |
 | K | Tableau noir (même touche pour le retirer) |
-| Z ou ⌘Z | Annuler le dernier tracé (ou la dernière étiquette) de l'écran sous la souris |
-| C ou E | Tout effacer (tableau compris) |
+| Z ou ⌘Z | Annuler le dernier tracé, la dernière forme, bulle ou étiquette de l'écran sous la souris ; répété, jusqu'à l'écran vide (puis sans effet). Le laser n'entre pas dans l'annulation |
+| C ou E | Tout effacer (tableau compris) en **restant** en mode dessin : l'outil courant est conservé |
 | Échap | Quitter le mode dessin **et tout effacer** (tracés, projecteur, tableau — quel que soit le réglage), même en plein tracé ou avec ⇧/⌘/⌥/⌃ enfoncé (sauf ⌘⌥Échap, réservé à Forcer à quitter) |
 
 Hors mode dessin, les clics traversent l'overlay et les annotations restent visibles,

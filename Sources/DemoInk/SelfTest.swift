@@ -319,6 +319,7 @@ extension OverlayController {
               "applicationWillTerminate releases drawing-mode and global hotkeys")
         check(editingBeforeQuit && !isEditingText && frontRestored(), "termination mid-entry ends it and restores focus")
         runLaserChecks(check, spin)
+        runUndoClearChecks(check)
         NSLog("DemoInk selftest: keyboard state machine %@", ok ? "PASS" : "FAIL")
     }
 
@@ -427,6 +428,40 @@ extension OverlayController {
         selectTool(.arrow)
         setDrawing(false)
         check(stopped(), "laser idle at the end")
+    }
+
+    /// ⌘Z undoes stroke by stroke back to an empty screen, then is a no-op; E (clear all) stays in drawing mode and
+    /// keeps the current tool.
+    private func runUndoClearChecks(_ check: (Bool, String) -> Void) {
+        setDrawing(true)
+        guard let canvas = panelUnderMouse()?.canvas, let window = canvas.window else { check(false, "undo/clear: no panel"); return }
+        func ev(_ type: NSEvent.EventType, _ p: CGPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let prevTool = Settings.shared.tool
+        let b = canvas.bounds, p = CGPoint(x: b.midX, y: b.midY)
+        selectTool(.pen)
+        canvas.mouseDown(with: ev(.leftMouseDown, p))
+        canvas.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: p.x - 60, y: p.y + 60)))
+        canvas.mouseUp(with: ev(.leftMouseUp, CGPoint(x: p.x - 60, y: p.y + 60)))
+        let h0 = canvas.historyCount
+        perform(.clearAll, source: "selftest")
+        check(h0 > 0 && isDrawing && Settings.shared.tool == .pen && canvas.historyCount == 0,
+              "E clears everything, stays in drawing mode, keeps the tool")
+        for i in 0..<3 {
+            canvas.mouseDown(with: ev(.leftMouseDown, CGPoint(x: p.x, y: p.y + CGFloat(i) * 30)))
+            canvas.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: p.x + 90, y: p.y + CGFloat(i) * 30)))
+            canvas.mouseUp(with: ev(.leftMouseUp, CGPoint(x: p.x + 90, y: p.y + CGFloat(i) * 30)))
+        }
+        let drawn = canvas.historyCount
+        perform(.undo, source: "selftest")
+        let afterOne = canvas.historyCount
+        for _ in 0..<3 { canvas.undo() } // same call as ⌘Z (a repeated perform within 50 ms would be deduplicated)
+        check(drawn == 3 && afterOne == 2 && canvas.historyCount == 0 && isDrawing,
+              "⌘Z undoes back to empty, then is a no-op")
+        selectTool(prevTool)
+        setDrawing(false)
     }
 
     /// DEMOINK_SELFTEST=laser: Laser in drawing mode, the dot moved along a figure-eight by synthetic mouseMoved
